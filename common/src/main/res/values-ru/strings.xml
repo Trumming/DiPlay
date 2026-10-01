@@ -72,7 +72,7 @@
     <string name="resolution_handshake_prefix">Разрешение рукопожатия:\u0020</string>
     <string name="safe_area_full_screen_at">Безопасная область: полный экран \u0020</string>
     <string name="safe_area_prefix">Безопасная область:\u0020</string>
-    <string name="settings_android9_compat">Следующие настройки недоступны и скрыты на Android 9 (API 28):\n• Wi-Fi P2P (5 ГГц) — вместо него используется LocalOnlyHotspot.\n• Программный декодер HEVC — вместо него используется аппаратное декодирование.</string>
+    <string name="settings_android9_compat">Следующие настройки недоступны и скрыты на Android 9 и более ранних версиях (API 28 или ниже):\n• Wi-Fi P2P (5 ГГц) — вместо него используется LocalOnlyHotspot.\n• Программный декодер HEVC — вместо него используется аппаратное декодирование.</string>
     <string name="settings_mfi_address_hint">Адрес должен начинаться с http:// или https://. Токен необязателен и отправляется как Authorization bearer token.</string>
     <string name="language_section_title">Язык</string>
     <string name="language_app_language">Язык приложения</string>
@@ -94,7 +94,7 @@
     <string name="allow_precise_location_for_diplay_in_the_head_unit_s_app_p">Разрешите точное «Местоположение» для DiPlay в разрешениях приложения головного устройства.</string>
     <string name="allow_the_connection_permission_to_continue">Разрешите подключение, чтобы продолжить</string>
     <string name="an_independent_carplay_receiver_for_android_head_units_wir">Независимый приёмник CarPlay для головных устройств Android. Проводные и беспроводные подключения работают на головном устройстве с локальной аутентификацией. Обычный iPhone может подключиться без джейлбрейка, Mac, переходника или входа в учётную запись.\n\nВ этой предварительной версии используется экспериментальная аксессуарная идентичность. Совместимость со всеми iPhone и головными устройствами ещё тестируется. Продукт не сертифицирован Apple.</string>
-    <string name="android_9_compatibility">Совместимость с Android 9</string>
+    <string name="android_9_compatibility">Совместимость с Android 9 и более ранними версиями</string>
     <string name="app_permissions">Разрешения приложения</string>
     <string name="app_settings">Настройки приложения</string>
     <string name="apply_and_reconnect">Применить и переподключиться</string>

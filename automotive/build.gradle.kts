@@ -11,6 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.shilapi.xcertplay"
+        // Android Automotive OS itself only ships on Android 9+; the 8.x floor applies to the head-unit APK.
         minSdk = 28
         targetSdk = 37
         versionCode = 1201
