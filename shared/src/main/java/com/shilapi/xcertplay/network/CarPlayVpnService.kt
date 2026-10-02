@@ -18,7 +18,6 @@ import com.shilapi.xcertplay.transport.NcmUsbBridge
 import java.io.IOException
 import java.net.Inet6Address
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
@@ -55,7 +54,7 @@ class CarPlayVpnService : VpnService() {
     private val sessionsLock = Any()
     private val sessions = mutableSetOf<AirPlaySession>()
     @Volatile private var attachment: AirPlayAttachment? = null
-    private var serverSocket: ServerSocket? = null
+    private var serverSockets: List<ServerSocket> = emptyList()
     private var bridge: Ipv6NcmBridge? = null
     private var tun: ParcelFileDescriptor? = null
     private var attachGeneration = 0
@@ -163,16 +162,17 @@ class CarPlayVpnService : VpnService() {
         generation: Int,
         replacement: AirPlayAttachment,
     ) {
-        val server = ServerSocket()
-        server.bind(InetSocketAddress(replacement.address, replacement.config.port))
+        val servers = bindAirPlayServerSockets(replacement.address, replacement.config.port)
         attachment = replacement
-        serverSocket = server
-        Thread(
-            { acceptLoop(generation, server) },
-            "airplay-accept",
-        ).apply {
-            isDaemon = true
-            start()
+        serverSockets = servers
+        servers.forEach { server ->
+            Thread(
+                { acceptLoop(generation, server) },
+                "airplay-accept",
+            ).apply {
+                isDaemon = true
+                start()
+            }
         }
     }
 
@@ -283,8 +283,8 @@ class CarPlayVpnService : VpnService() {
         attachGeneration += 1
         active.set(false)
         attachment = null
-        serverSocket?.close()
-        serverSocket = null
+        serverSockets.forEach { socket -> runCatching { socket.close() } }
+        serverSockets = emptyList()
         closeSessionsLocked()
         bridge?.close()
         bridge = null
