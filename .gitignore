@@ -16,6 +16,7 @@ captures/
 
 # Local agent working notes
 /agent_docs/
+.codegraph/
 
 # OS files
 .DS_Store
