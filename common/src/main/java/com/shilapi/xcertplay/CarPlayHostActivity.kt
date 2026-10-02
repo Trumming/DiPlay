@@ -367,11 +367,13 @@ class CarPlayHostActivity : ComponentActivity() {
             }
             appendLog(if (existing === surface) "Texture surface reused" else "Texture surface created")
             attachSurface(surface)
-            scheduleDisplaySize(width, height)
+            scheduleDisplaySizeFromViewport()
         }
 
         override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
-            scheduleDisplaySize(width, height)
+            // The view size here is the letterboxed rect, never the viewport; reporting it made
+            // every rotation renegotiate the session at a degenerate size until CarPlay dropped.
+            scheduleDisplaySizeFromViewport()
         }
 
         override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
@@ -757,10 +759,7 @@ class CarPlayHostActivity : ComponentActivity() {
         applyFullscreenMode()
         stageStatusView?.maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
         scrollLogsToBottom()
-        videoView?.post {
-            val view = videoView ?: return@post
-            scheduleDisplaySize(view.width, view.height)
-        }
+        videoView?.post { scheduleDisplaySizeFromViewport() }
     }
 
     override fun onDestroy() {
@@ -786,6 +785,8 @@ class CarPlayHostActivity : ComponentActivity() {
         val video = TextureView(this).apply {
             isOpaque = false
             surfaceTextureListener = textureListener
+            // Re-apply the stream aspect on every layout: rotation back and forward, split-screen.
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyVideoViewportAspect() }
         }
         val gestureLayer = View(this).apply {
             isClickable = true
@@ -2933,10 +2934,7 @@ class CarPlayHostActivity : ComponentActivity() {
     }
 
     private fun refreshDisplaySizeAfterLayout() {
-        videoView?.post {
-            val view = videoView ?: return@post
-            scheduleDisplaySize(view.width, view.height)
-        }
+        videoView?.post { scheduleDisplaySizeFromViewport() }
     }
 
     private fun normalizedManufacturer(): String =
@@ -3215,6 +3213,21 @@ class CarPlayHostActivity : ComponentActivity() {
         return File(filesDir, AUDIO_CAPTURE_DIRECTORY)
     }
 
+    /**
+     * Feeds the full-screen viewport as the display size. The video view itself letterboxes to
+     * the negotiated stream shape, so its own size is degenerate (a rotated phone reports
+     * 360x720-style rects) and must never feed the renegotiation pipeline.
+     */
+    private fun scheduleDisplaySizeFromViewport() {
+        val view = videoView ?: return
+        val parent = view.parent as? ViewGroup
+        if (parent != null && parent.width > 0 && parent.height > 0) {
+            scheduleDisplaySize(parent.width, parent.height)
+        } else {
+            scheduleDisplaySize(view.width, view.height)
+        }
+    }
+
     private fun scheduleDisplaySize(width: Int, height: Int) {
         if (width <= 0 || height <= 0 || shuttingDown.get()) return
         val size = DisplaySize(width, height)
@@ -3239,10 +3252,39 @@ class CarPlayHostActivity : ComponentActivity() {
                     "${previous.width}x${previous.height} -> ${size.width}x${size.height}",
             )
         } else {
+            // A rotation re-negotiates the stream so the CarPlay UI re-orients with the phone,
+            // like a head unit switching resolution. The letterbox keeps the outgoing picture
+            // shaped for the gap until the re-negotiated stream takes over.
+            applyVideoViewportAspect()
             restartCarPlay(
                 "Display changed ${previous.width}x${previous.height} -> ${size.width}x${size.height}",
             )
         }
+    }
+
+    /** Letterboxes the video view to the negotiated stream shape instead of stretching it. */
+    private fun applyVideoViewportAspect() {
+        val stream = activeDisplaySize ?: return
+        val view = videoView ?: return
+        val parent = view.parent as? ViewGroup ?: return
+        if (parent.width <= 0 || parent.height <= 0) return
+        val streamRatio = stream.width.toFloat() / stream.height.toFloat()
+        val parentRatio = parent.width.toFloat() / parent.height.toFloat()
+        val sized: FrameLayout.LayoutParams = view.layoutParams as? FrameLayout.LayoutParams ?: return
+        val width: Int
+        val height: Int
+        if (parentRatio > streamRatio) {
+            height = parent.height
+            width = (parent.height * streamRatio).toInt().coerceAtLeast(1)
+        } else {
+            width = parent.width
+            height = (parent.width / streamRatio).toInt().coerceAtLeast(1)
+        }
+        if (sized.width == width && sized.height == height && sized.gravity == Gravity.CENTER) return
+        sized.width = width
+        sized.height = height
+        sized.gravity = Gravity.CENTER
+        view.layoutParams = sized
     }
 
     private fun recordDetectedMaximum(size: DisplaySize) {
@@ -3312,11 +3354,11 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun restartCarPlay(reason: String) {
         if (!CarPlayBackgroundSession.isOwner(this)) return
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress) return
-        val size = activeDisplaySize ?: return
+        if (activeDisplaySize == null) return
         appendLog(reason)
         activeScreenStreamTypes.clear()
         setConnectionStage(reason)
-        Log.i(TAG, "$reason; rebuilding stack at ${size.width}x${size.height}")
+        Log.i(TAG, "$reason; rebuilding stack")
         val generation = ++restartGeneration
         handshakeResetInProgress = true
         val oldController = controller
@@ -3332,6 +3374,10 @@ class CarPlayHostActivity : ComponentActivity() {
             runOnUiThread {
                 if (!shuttingDown.get() && generation == restartGeneration) {
                     handshakeResetInProgress = false
+                    // Sizes landing during the teardown only update activeDisplaySize, so read it
+                    // now: rebuilding at the size captured at entry could reopen the session in
+                    // the orientation the phone already left.
+                    val size = activeDisplaySize ?: return@runOnUiThread
                     startCarPlay(size)
                 }
             }
@@ -3474,7 +3520,16 @@ class CarPlayHostActivity : ComponentActivity() {
             return true
         }
 
-        val contacts = CarPlayTouchMapper.contacts(event, view.width, view.height)
+        // Map through the video rect, not the gesture layer: with the stream letterboxed the
+        // two diverge, and touches must normalize against the picture the iPhone is streaming.
+        val video = videoView
+        val contacts = CarPlayTouchMapper.contacts(
+            event,
+            video?.width ?: view.width,
+            video?.height ?: view.height,
+            video?.left ?: 0,
+            video?.top ?: 0,
+        )
         val queued = controller?.sendTouch(contacts) ?: false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN,
