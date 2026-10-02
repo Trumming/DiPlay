@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "com.shihab.diplay"
-        minSdk = 26
+        minSdk = 23
         targetSdk = 37
         versionCode = 27
         versionName = "0.2.8"
@@ -26,6 +26,10 @@ android {
     localAuthenticationAssets?.let { sourceSets.getByName("main").assets.srcDir(it) }
 
     signingConfigs {
+        getByName("debug") {
+            // Vendor sideload installers may only honor legacy JAR signatures; keep v1 next to v2.
+            enableV1Signing = true
+        }
         create("release") {
             storeFile = file(
                 providers.environmentVariable("ANDROID_KEYSTORE_PATH")
@@ -117,4 +121,9 @@ tasks.register("assembleStandaloneDebug") {
     group = "build"
     description = "Build a standalone car-test APK with explicitly provisioned authentication."
     dependsOn(verifyStandaloneAuthentication, "assembleDebug")
+}
+tasks.register("assembleStandaloneRelease") {
+    group = "build"
+    description = "Build a standalone release APK with explicitly provisioned authentication."
+    dependsOn(verifyStandaloneAuthentication, "assembleRelease")
 }

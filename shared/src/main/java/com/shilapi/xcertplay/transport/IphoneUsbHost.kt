@@ -368,13 +368,13 @@ class Iap2UsbSession internal constructor(
                 pendingRead = request
             }
             val buffer = ByteBuffer.allocateDirect(USBMUX_READ_CHUNK_BYTES)
-            if (!request.queue(buffer)) {
+            if (!request.queue(buffer, buffer.capacity())) {
                 throw IphoneUsbException.DeviceUnavailable(
                     "Android could not queue USBMUX read request (${requestDiagnostics(timeoutMillis, buffer.capacity())})",
                 )
             }
             val completed = try {
-                connection.requestWait(timeoutMillis)
+                requestWaitCompat(timeoutMillis)
             } catch (_: TimeoutException) {
                 drainCancelledRead(request)
                 return@synchronized null
@@ -416,6 +416,14 @@ class Iap2UsbSession internal constructor(
         synchronized(stateLock) { checkOpenLocked() }
     }
 
+    /** requestWait(timeout) needs API 26; older releases only have the blocking no-argument form. */
+    private fun requestWaitCompat(timeoutMillis: Long): UsbRequest? =
+        if (Build.VERSION.SDK_INT >= 26) {
+            connection.requestWait(timeoutMillis)
+        } else {
+            connection.requestWait()
+        }
+
     private fun checkOpenLocked() {
         failure?.let { throw it }
         if (closed) throw IphoneUsbException.DeviceUnavailable("USBMUX session is closed")
@@ -426,7 +434,7 @@ class Iap2UsbSession internal constructor(
             throw failSession("Android could not cancel timed out USBMUX read request")
         }
         val completed = try {
-            connection.requestWait(CANCEL_DRAIN_TIMEOUT_MILLIS)
+            requestWaitCompat(CANCEL_DRAIN_TIMEOUT_MILLIS)
         } catch (_: TimeoutException) {
             throw failSession("Timed out draining cancelled USBMUX read request")
         }

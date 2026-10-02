@@ -43,6 +43,7 @@ internal class AudioFocusCoordinator(
     private val active = LinkedHashMap<AudioTrack, Entry>()
     private var request: AudioFocusRequest? = null
     private var requestedChannel: AudioChannel? = null
+    private var legacyFocusStream: Int? = null
     private val listener = AudioManager.OnAudioFocusChangeListener { change ->
         synchronized(this) {
             runCatching { report("Audio: focus change=$change activeTracks=${active.size}") }
@@ -70,29 +71,54 @@ internal class AudioFocusCoordinator(
     private fun refreshRequest() {
         val primary = active.values.maxByOrNull { it.channel.focusPriority() }
         if (primary == null) {
-            request?.let { manager?.abandonAudioFocusRequest(it) }
-            request = null
+            abandonFocus()
             requestedChannel = null
             return
         }
-        if (request != null && requestedChannel == primary.channel) return
-        request?.let { manager?.abandonAudioFocusRequest(it) }
+        if ((request != null || legacyFocusStream != null) && requestedChannel == primary.channel) return
+        abandonFocus()
         val gain = when (primary.channel) {
             AudioChannel.MEDIA -> AudioManager.AUDIOFOCUS_GAIN
             AudioChannel.PHONE -> AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
             AudioChannel.ASSISTANT -> AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
             AudioChannel.NAVIGATION -> return
         }
-        val next = AudioFocusRequest.Builder(gain)
-            .setAudioAttributes(primary.attributes)
-            .setOnAudioFocusChangeListener(listener, Handler(Looper.getMainLooper()))
-            .build()
-        request = next
         requestedChannel = primary.channel
-        val result = manager?.requestAudioFocus(next)
+        val result = if (Build.VERSION.SDK_INT >= 26) {
+            val next = AudioFocusRequest.Builder(gain)
+                .setAudioAttributes(primary.attributes)
+                .setOnAudioFocusChangeListener(listener, Handler(Looper.getMainLooper()))
+                .build()
+            request = next
+            manager?.requestAudioFocus(next)
+        } else {
+            // AudioFocusRequest needs API 26; the legacy call carries no per-request attributes.
+            val stream = primary.channel.legacyStream()
+            legacyFocusStream = stream
+            @Suppress("DEPRECATION")
+            manager?.requestAudioFocus(listener, stream, gain)
+        }
         val line = "Audio: focus requested channel=${primary.channel} gain=$gain granted=$result activeTracks=${active.size}"
         Log.i(TAG, line)
         runCatching { report(line) }
+    }
+
+    private fun abandonFocus() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            request?.let { manager?.abandonAudioFocusRequest(it) }
+        }
+        request = null
+        if (legacyFocusStream != null) {
+            @Suppress("DEPRECATION")
+            manager?.abandonAudioFocus(listener)
+        }
+        legacyFocusStream = null
+    }
+
+    /** Pre-26 legacy focus calls take a stream instead of per-request attributes. */
+    private fun AudioChannel.legacyStream(): Int = when (this) {
+        AudioChannel.PHONE -> AudioManager.STREAM_VOICE_CALL
+        else -> AudioManager.STREAM_MUSIC
     }
 
     private fun setVolume(volume: Float) {
@@ -245,7 +271,7 @@ class AndroidMediaSink(
     }
 
     override fun onMicrophoneStarted(id: AudioStreamId, config: MicrophoneConfig) {
-        val uplink = microphoneUplinks.computeIfAbsent(id) { MicrophoneUplink(config) }
+        val uplink = microphoneUplinks.getOrPut(id) { MicrophoneUplink(config) }
         if (!uplink.start()) microphoneUplinks.remove(id, uplink)
     }
 
@@ -273,7 +299,7 @@ class AndroidMediaSink(
     }
 
     private fun videoDecoder(type: Int): VideoDecoder =
-        videoDecoders.computeIfAbsent(type) {
+        videoDecoders.getOrPut(type) {
             VideoDecoder(
                 type,
                 surfaces[type] ?: defaultSurface,
@@ -730,7 +756,14 @@ private class AudioRenderer(
             packetsReceived.incrementAndGet()
             val now = System.nanoTime()
             val previous = lastArrivalNs.getAndSet(now)
-            if (previous != 0L) maxArrivalGapMs.accumulateAndGet((now - previous) / 1_000_000L, ::maxOf)
+            if (previous != 0L) {
+                // AtomicLong#accumulateAndGet needs API 24; this CAS loop is API 1 and lock-free.
+                val gap = (now - previous) / 1_000_000L
+                while (true) {
+                    val current = maxArrivalGapMs.get()
+                    if (gap <= current || maxArrivalGapMs.compareAndSet(current, gap)) break
+                }
+            }
         }
         if (!started || !queue.offer(AudioPacket(rtp, sample))) {
             if (started) packetsDropped.incrementAndGet()
@@ -766,7 +799,8 @@ private class AudioRenderer(
             }
         } catch (_: InterruptedException) {
             // Worker shut down.
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
+            // Includes Error: a renderer failure must degrade to no audio, never kill the host.
             if (running) {
                 Log.e(TAG, "audio renderer worker failed", error)
                 report("Audio: renderer failed audioType=${format.audioType} error=${error.javaClass.simpleName}")
@@ -862,7 +896,11 @@ private class AudioRenderer(
             )
         }
         track = built
-        trackAttributes = built.audioAttributes
+        // getAudioAttributes() exists only from Q; line 827 already stored the attributes the
+        // track was built with, which is what focus handling needs on older releases.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            trackAttributes = built.audioAttributes
+        }
         val capacityBytes = built.bufferSizeInFrames * frameBytes
         startThresholdBytes = MediaAudioBuffer.startBytesFor(plan.startBytes, capacityBytes, PREBUFFER_WRITE_CHUNK_BYTES)
         report("Audio: ready audioType=${format.audioType} codec=${format.codec} " +
@@ -1187,15 +1225,19 @@ private class AudioRenderer(
     }
 
     private fun startPlayback(track: AudioTrack) {
-        underrunsAtPlaybackStart = track.underrunCount
+        underrunsAtPlaybackStart = track.underrunCountCompat()
         track.play()
         playbackStarted = true
     }
 
+    /** AudioTrack#getUnderrunCount needs API 24; older releases expose no underrun counter. */
+    private fun AudioTrack.underrunCountCompat(): Int =
+        if (Build.VERSION.SDK_INT >= 24) underrunCount else 0
+
     private fun maintainPlaybackBuffer() {
         val track = track ?: return
         if (bufferProgress.shouldRebuffer(mappedChannel == AudioChannel.MEDIA, playbackStarted,
-                track.underrunCount > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition)) {
+                track.underrunCountCompat() > underrunsAtPlaybackStart, queue.isEmpty(), track.playbackHeadPosition)) {
             // The hardware buffer has actually drained. Pause without flushing or discarding PCM,
             // then use the configured start threshold again when music resumes.
             track.pause()
@@ -1215,7 +1257,7 @@ private class AudioRenderer(
         val now = System.nanoTime()
         if (statsWindowStartNs == 0L) statsWindowStartNs = now
         if (!force && now - statsWindowStartNs < STATS_WINDOW_NS) return
-        val underruns = track?.underrunCount ?: 0
+        val underruns = track?.underrunCountCompat() ?: 0
         val lastRx = lastArrivalNs.get()
         val currentTrack = track
         val playbackHeadFrames = currentTrack?.playbackHeadPosition

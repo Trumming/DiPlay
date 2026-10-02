@@ -5,6 +5,7 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbRequest
+import android.os.Build
 import android.util.Log
 import java.io.Closeable
 import java.nio.ByteBuffer
@@ -232,7 +233,9 @@ class NcmUsbBridge internal constructor(
                 }
                 if (!readQueued) {
                     directReadBuffer.clear()
-                    if (!current.queue(directReadBuffer)) throw failSession("Android could not queue the NCM read request")
+                    if (!current.queue(directReadBuffer, directReadBuffer.capacity())) {
+                        throw failSession("Android could not queue the NCM read request")
+                    }
                     readQueued = true
                 }
                 current
@@ -242,7 +245,12 @@ class NcmUsbBridge internal constructor(
         }
         try {
             val completed = try {
-                connection.requestWait(timeoutMillis.coerceAtLeast(1))
+                if (Build.VERSION.SDK_INT >= 26) {
+                    connection.requestWait(timeoutMillis.coerceAtLeast(1))
+                } else {
+                    // requestWait(timeout) needs API 26; older releases block until completion.
+                    connection.requestWait()
+                }
             } catch (_: TimeoutException) {
                 // Nothing arrived yet; the request stays queued for the next call. USBMUX owns
                 // authoritative detach/failure detection for the same phone.
