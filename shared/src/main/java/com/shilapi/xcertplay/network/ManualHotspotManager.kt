@@ -89,8 +89,16 @@ class ManualHotspotManager(
             check(!closed) { "ManualHotspotManager is closed" }
             val localInterface = findLocalHotspotInterface()
             if (localInterface != null) {
-                val connectionFrequency = frequencyFromConnectionInfo()
-                val scanFrequency = frequencyFromScanResult(localInterface)
+                var connectionFrequency = frequencyFromConnectionInfo()
+                var scanFrequency = frequencyFromScanResult(localInterface)
+                if ((apConfiguration?.channel ?: 0) <= 0 &&
+                    connectionFrequency == null &&
+                    scanFrequency == null
+                ) {
+                    // Nothing reports the live channel: the iAP2 Wi-Fi message would carry 0.
+                    // Ask the radio to scan once so the AP's own beacon can answer the question.
+                    refreshScanForChannel(deadlineNanos, localInterface)?.let { scanFrequency = it }
+                }
                 val channel = observedManualHotspotChannel(
                     apChannel = apConfiguration?.channel ?: 0,
                     connectionFrequencyMHz = connectionFrequency,
@@ -268,17 +276,54 @@ class ManualHotspotManager(
     }
 
     private fun frequencyFromScanResult(localInterface: LocalHotspotInterface): Int? {
-        val localBssid = localInterface.hardwareAddress ?: return null
+        val localBssid = localInterface.hardwareAddress
         val scanResults = try {
             wifiManager.scanResults
         } catch (_: SecurityException) {
             return null
         }
-        return scanResults.firstOrNull { result ->
-            result.SSID == expectedSsid &&
-                result.BSSID.equals(localBssid, ignoreCase = true) &&
-                result.frequency > 0
-        }?.frequency
+        val candidates = scanResults.filter { result ->
+            result.SSID == expectedSsid && result.frequency > 0
+        }
+        if (candidates.isEmpty()) return null
+        onDiagnostic(
+            "probe scan ssid='$expectedSsid' localBssid=$localBssid candidates=" +
+                candidates.joinToString(",") { "${it.BSSID}@${it.frequency}MHz" },
+        )
+        val byBssid = localBssid?.let { bssid ->
+            candidates.firstOrNull { result -> result.BSSID.equals(bssid, ignoreCase = true) }
+        }
+        if (byBssid != null) return byBssid.frequency
+        if (candidates.size == 1) {
+            // The interface MAC may not equal the advertised BSSID on some chips; a single
+            // same-SSID beacon is unambiguous enough to answer the channel question.
+            val only = candidates.first()
+            onDiagnostic("probe scan adopting the only candidate ${only.BSSID}@${only.frequency}MHz")
+            return only.frequency
+        }
+        return null
+    }
+
+    private fun refreshScanForChannel(
+        deadlineNanos: Long,
+        localInterface: LocalHotspotInterface,
+    ): Int? {
+        repeat(SCAN_REFRESH_ATTEMPTS) { attempt ->
+            if (remainingNanos(deadlineNanos) <= 0) return null
+            val started = try {
+                wifiManager.startScan()
+            } catch (error: Exception) {
+                onDiagnostic("probe scan startScan failed: ${error.message}")
+                false
+            }
+            onDiagnostic("probe scan refreshing scan results attempt=$attempt started=$started")
+            sleep(minOf(
+                TimeUnit.SECONDS.toNanos(SCAN_SETTLE_SECONDS),
+                remainingNanos(deadlineNanos),
+            ))
+            frequencyFromScanResult(localInterface)?.let { return it }
+        }
+        return null
     }
 
     @SuppressLint("PrivateApi")
@@ -433,6 +478,8 @@ class ManualHotspotManager(
     private companion object {
         const val TAG = "xcertplay-usb"
         const val NANOS_PER_MILLISECOND = 1_000_000L
+        const val SCAN_REFRESH_ATTEMPTS = 2
+        const val SCAN_SETTLE_SECONDS = 2L
         val INTERFACE_POLL_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(250)
         val EXCLUDED_INTERFACE_PREFIXES = listOf(
             "lo",

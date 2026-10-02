@@ -136,6 +136,7 @@
     <string name="channel_must_be_0_or_1_196">يجب أن تكون القناة 0 أو من 1 إلى 196</string>
     <string name="check_and_enable">تحقق وفعّل</string>
     <string name="check_that_storage_is_available_or_choose_another_save_loc">تحقق من توفر التخزين، أو اختر موضع حفظ آخر.</string>
+    <string name="allow_storage_access_so_the_report_can_be_saved_to_downloads">اسمح بالوصول إلى التخزين ليُحفظ التقرير في Downloads/DiPlay.</string>
     <string name="choose_how_to_connect_follow_the_setup_steps_and_save_your">اختر طريقة الاتصال، واتبع خطوات الإعداد، واحفظ بيانات نقطة اتصال سيارتك.</string>
     <string name="choose_image">اختر صورة</string>
     <string name="choose_iphone">اختر iPhone</string>

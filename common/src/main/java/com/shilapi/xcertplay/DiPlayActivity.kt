@@ -18,6 +18,7 @@ import android.media.AudioTrack
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -81,6 +82,13 @@ class DiPlayActivity : ComponentActivity() {
     }
     private val export = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
         if (uri != null) exportDiagnostics(uri)
+    }
+    private val legacyStoragePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) exportDiagnostics()
+        else permissionHelp(
+            getString(R.string.save_diagnostic_report),
+            getString(R.string.allow_storage_access_so_the_report_can_be_saved_to_downloads),
+        )
     }
 
     private var languagePreferenceAtCreate = AppLocale.SYSTEM
@@ -247,7 +255,7 @@ class DiPlayActivity : ComponentActivity() {
         section(content, getString(R.string.diagnostics), R.drawable.ic_dp_diagnostics) { card ->
             exportButton = button(if (exportInProgress) getString(R.string.saving_report) else getString(R.string.save_diagnostic_report), false) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) exportDiagnostics()
-                else chooseReportDestination()
+                else exportToPublicDownloadsOrAsk()
             }.apply { isEnabled = !exportInProgress }
             card.addView(exportButton, matchButton(10, 60))
             card.addView(button(getString(R.string.choose_save_location), false) { chooseReportDestination() }, matchButton(10, 60))
@@ -912,22 +920,27 @@ class DiPlayActivity : ComponentActivity() {
             }.setNegativeButton(getString(R.string.cancel), null).show()
     }
 
+    /** Channel.close() is API 27; pre-8.1 the channel is simply dropped with the activity. */
+    private fun closeP2pChannel(channel: android.net.wifi.p2p.WifiP2pManager.Channel?) {
+        if (Build.VERSION.SDK_INT >= 27) channel?.close()
+    }
+
     private fun resetWirelessGroup() {
         val manager = getSystemService(android.net.wifi.p2p.WifiP2pManager::class.java)
         if (manager == null) { toast(getString(R.string.this_head_unit_does_not_support_wi_fi_direct)); return }
         val channel = manager.initialize(this, mainLooper, null)
         try {
             manager.requestGroupInfo(channel) { group ->
-                if (group == null) { channel.close(); connect(true); return@requestGroupInfo }
+                if (group == null) { closeP2pChannel(channel); connect(true); return@requestGroupInfo }
                 manager.removeGroup(channel, object : android.net.wifi.p2p.WifiP2pManager.ActionListener {
                     override fun onSuccess() {
                         val deadline = android.os.SystemClock.elapsedRealtime() + 4000
                         fun waitUntilRemoved() {
                             manager.requestGroupInfo(channel) { remaining ->
                                 when {
-                                    remaining == null -> { channel.close(); if (!isFinishing && !isDestroyed) connect(true) }
+                                    remaining == null -> { closeP2pChannel(channel); if (!isFinishing && !isDestroyed) connect(true) }
                                     android.os.SystemClock.elapsedRealtime() >= deadline -> {
-                                        channel.close(); toast(getString(R.string.wi_fi_direct_is_still_busy_close_the_other_projection_app))
+                                        closeP2pChannel(channel); toast(getString(R.string.wi_fi_direct_is_still_busy_close_the_other_projection_app))
                                     }
                                     else -> handler.postDelayed({ waitUntilRemoved() }, 200)
                                 }
@@ -935,11 +948,11 @@ class DiPlayActivity : ComponentActivity() {
                         }
                         waitUntilRemoved()
                     }
-                    override fun onFailure(reason: Int) { channel.close(); toast(getString(R.string.could_not_reset_wi_fi_direct_close_the_other_projection_ap)) }
+                    override fun onFailure(reason: Int) { closeP2pChannel(channel); toast(getString(R.string.could_not_reset_wi_fi_direct_close_the_other_projection_ap)) }
                 })
             }
         } catch (_: SecurityException) {
-            channel.close(); permissionHelp(getString(R.string.wireless_permissions), getString(R.string.allow_nearby_devices_and_on_older_android_versions_locatio))
+            closeP2pChannel(channel); permissionHelp(getString(R.string.wireless_permissions), getString(R.string.allow_nearby_devices_and_on_older_android_versions_locatio))
         }
     }
 
@@ -969,6 +982,15 @@ class DiPlayActivity : ComponentActivity() {
             toast(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                 getString(R.string.this_head_unit_could_not_open_a_save_location_please_try_s)
                 else getString(R.string.this_head_unit_has_no_available_file_picker_to_save_the_re))
+        }
+    }
+
+    /** Pre-Q units often ship no DocumentsUI at all; public Downloads needs only the storage permission. */
+    private fun exportToPublicDownloadsOrAsk() {
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+            exportDiagnostics()
+        } else {
+            legacyStoragePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
 
@@ -1007,7 +1029,14 @@ class DiPlayActivity : ComponentActivity() {
                 if (uri != null) { DiagnosticExportStore.write(appContext.contentResolver, uri, report); uri }
                 else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     DiagnosticExportStore.saveToDownloads(appContext.contentResolver, fileName, report)
-                } else error("A save location is required")
+                } else {
+                    @Suppress("DEPRECATION")
+                    val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    val directory = File(downloads, "DiPlay").apply { if (!isDirectory) mkdirs() }
+                    val destination = File(directory, fileName)
+                    destination.writeText(report)
+                    Uri.fromFile(destination)
+                }
             }
             runOnUiThread {
                 exportInProgress = false

@@ -138,6 +138,7 @@
     <string name="channel_must_be_0_or_1_196">Channel must be 0 or 1-196</string>
     <string name="check_and_enable">Check and enable</string>
     <string name="check_that_storage_is_available_or_choose_another_save_loc">Check that storage is available, or choose another save location.</string>
+    <string name="allow_storage_access_so_the_report_can_be_saved_to_downloads">Allow storage access so the report can be saved to Downloads/DiPlay.</string>
     <string name="choose_how_to_connect_follow_the_setup_steps_and_save_your">Choose how to connect, follow the setup steps and save your car hotspot details.</string>
     <string name="choose_image">Choose image</string>
     <string name="choose_iphone">Choose iPhone</string>

@@ -136,6 +136,7 @@
     <string name="channel_must_be_0_or_1_196">El canal debe ser 0 o estar entre 1 y 196</string>
     <string name="check_and_enable">Comprobar y activar</string>
     <string name="check_that_storage_is_available_or_choose_another_save_loc">Comprueba que el almacenamiento esté disponible o elige otro lugar de guardado.</string>
+    <string name="allow_storage_access_so_the_report_can_be_saved_to_downloads">Permite el acceso al almacenamiento para guardar el informe en Downloads/DiPlay.</string>
     <string name="choose_how_to_connect_follow_the_setup_steps_and_save_your">Elige cómo conectarte, sigue los pasos de configuración y guarda los datos de tu punto de acceso del coche.</string>
     <string name="choose_image">Elegir imagen</string>
     <string name="choose_iphone">Elegir iPhone</string>

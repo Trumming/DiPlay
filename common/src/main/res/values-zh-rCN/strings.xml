@@ -132,6 +132,7 @@
     <string name="channel_must_be_0_or_1_196">信道必须为 0 或 1–196</string>
     <string name="check_and_enable">检查并启用</string>
     <string name="check_that_storage_is_available_or_choose_another_save_loc">请检查存储空间，或选择其他保存位置。</string>
+    <string name="allow_storage_access_so_the_report_can_be_saved_to_downloads">允许存储权限，以便将报告保存到 Downloads/DiPlay。</string>
     <string name="choose_how_to_connect_follow_the_setup_steps_and_save_your">选择连接方式，按步骤操作并保存车机热点信息。</string>
     <string name="choose_image">选择图片</string>
     <string name="choose_iphone">选择 iPhone</string>

@@ -54,6 +54,7 @@ class CarPlayVpnService : VpnService() {
     private val sessionsLock = Any()
     private val sessions = mutableSetOf<AirPlaySession>()
     @Volatile private var attachment: AirPlayAttachment? = null
+    @Volatile private var acceptDiagnostic: (String) -> Unit = {}
     private var serverSockets: List<ServerSocket> = emptyList()
     private var bridge: Ipv6NcmBridge? = null
     private var tun: ParcelFileDescriptor? = null
@@ -126,12 +127,14 @@ class CarPlayVpnService : VpnService() {
         mfi: MfiAuthenticator?,
         listener: AirPlaySessionListener,
         media: AirPlayMediaHandler,
+        onDiagnostic: (String) -> Unit = {},
     ): AttachResult {
         if (active.get()) {
             Log.i(TAG, "replacing stale local-only Wi-Fi attachment")
             releaseLocked()
         }
         active.set(true)
+        acceptDiagnostic = onDiagnostic
         val generation = ++attachGeneration
         return try {
             startAirPlayServer(
@@ -184,6 +187,9 @@ class CarPlayVpnService : VpnService() {
             while (active.get()) {
                 val socket: Socket = server.accept()
                 Log.i(TAG, "airplay connection accepted from ${socket.remoteSocketAddress}")
+                runCatching {
+                    acceptDiagnostic("airplay connection accepted from ${socket.remoteSocketAddress}")
+                }
                 socket.tcpNoDelay = true
                 socket.keepAlive = true
                 socket.setSoLinger(true, 0)
@@ -228,6 +234,7 @@ class CarPlayVpnService : VpnService() {
             }
         } catch (error: IOException) {
             if (active.get()) {
+                runCatching { acceptDiagnostic("airplay accept failed: ${error.message}") }
                 attachment?.listener?.let { onTransportError(generation, it, error) }
             }
         }

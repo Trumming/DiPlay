@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -146,7 +147,12 @@ class CarPlayVideoActivity : Activity() {
 
     // The exact position, not the previous key frame, so a 10 s skip really moves 10 s.
     private fun seekExactly(millis: Int) {
-        player?.seekTo(millis.toLong(), MediaPlayer.SEEK_CLOSEST) ?: video.seekTo(millis)
+        // seekTo(long, mode) is API 26; 7.x falls back to the key-frame int seek.
+        if (Build.VERSION.SDK_INT >= 26) {
+            player?.seekTo(millis.toLong(), MediaPlayer.SEEK_CLOSEST) ?: video.seekTo(millis)
+        } else {
+            player?.seekTo(millis) ?: video.seekTo(millis)
+        }
     }
 
     override fun onDestroy() {

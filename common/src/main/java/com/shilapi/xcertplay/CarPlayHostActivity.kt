@@ -3107,7 +3107,16 @@ class CarPlayHostActivity : ComponentActivity() {
         if (CarPlayBackgroundSession.hasSession() && !CarPlayBackgroundSession.isOwner(this)) return
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress || controller != null) return
         val controllerGeneration = restartGeneration
-        val config = createRuntimeConfig()
+        // Config validation throws IllegalArgumentException on gaps (a missing hotspot SSID, a bad
+        // passphrase length); that must degrade to a stage message, never kill the process.
+        val config = try {
+            createRuntimeConfig()
+        } catch (error: IllegalArgumentException) {
+            appendLog("Configuration invalid: ${error.message}")
+            shutdown(false, "invalid configuration")
+            setConnectionStage(getString(R.string.could_not_start_carplay_return_to_diplay_and_check_app_per))
+            return
+        }
         val airPlayConfig = createAirPlayConfig(size)
         val locationProvider: Iap2LocationProvider? =
             when {
@@ -3183,9 +3192,11 @@ class CarPlayHostActivity : ComponentActivity() {
             }
         }
         try {
-            startForegroundService(Intent(this, DiPlaySessionService::class.java))
+            val service = Intent(this, DiPlaySessionService::class.java)
+            // startForegroundService is API 26; Android 7.x head units take the plain call.
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service) else startService(service)
             next.start()
-        } catch (error: RuntimeException) {
+        } catch (error: Throwable) {
             appendLog("Connection could not start: ${error.javaClass.simpleName}")
             shutdown(false, "foreground service could not start")
             setConnectionStage(getString(R.string.could_not_start_carplay_return_to_diplay_and_check_app_per))

@@ -31,12 +31,18 @@ class Iap2WirelessControlClient(
         onReady: () -> Unit = {},
         onIncoming: (Iap2Frame) -> Unit = {},
         onProgress: (String) -> Unit = {},
+        peerPresence: WirelessPeerPresence? = null,
+        isAirPlayActive: () -> Boolean = { false },
+        carPlayStartWatchdogMillis: Long = 0L,
     ): Iap2WirelessControlResult {
         require(identification.wireless != null) {
             "Wireless control requires an Iap2IdentificationConfig with wireless transport"
         }
         require(timeoutMillis == NO_TIMEOUT_MILLIS || timeoutMillis in 1..MAX_TIMEOUT_MILLIS) {
             "timeoutMillis must be in 1..$MAX_TIMEOUT_MILLIS or NO_TIMEOUT_MILLIS"
+        }
+        require(carPlayStartWatchdogMillis >= 0) {
+            "carPlayStartWatchdogMillis must not be negative"
         }
 
         val deadlineNanos = if (timeoutMillis == NO_TIMEOUT_MILLIS) {
@@ -70,8 +76,28 @@ class Iap2WirelessControlClient(
         var postTransportWiFiConfigurationsSent = 0
         var transportNotificationSeen = false
         var wirelessCarPlayAvailableSeen = false
+        var carPlayStartWatchdogDeadlineNanos = 0L
+        val startResend = Iap2CarPlayStartResendPolicy()
         val location = Iap2LocationReporter(locationProvider, onProgress, locationRequest, continueLocationRequest)
         val vehicleStatus = Iap2VehicleStatusReporter(vehicleStatusProvider, onProgress)
+
+        fun sendCarPlayStart(resendReason: String? = null) {
+            send(carPlayStartSession(endpoint), deadlineNanos)
+            stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
+            carPlayStartSessionsSent++
+            if (carPlayStartWatchdogMillis > 0 && carPlayStartWatchdogDeadlineNanos == 0L) {
+                carPlayStartWatchdogDeadlineNanos =
+                    System.nanoTime() + carPlayStartWatchdogMillis * NANOS_PER_MILLISECOND
+            }
+            onProgress(
+                if (resendReason == null) {
+                    "iap2 tx=0x4301 carplay-start-session peerOnNetwork=${peerPresence?.isPresent == true}"
+                } else {
+                    "iap2 tx=0x4301 carplay-start-session resend: $resendReason"
+                },
+            )
+        }
+
         while (true) {
                 val remaining = remainingMillis(deadlineNanos)
                 if (remaining == 0L) {
@@ -86,9 +112,40 @@ class Iap2WirelessControlClient(
                         wirelessCarPlayAvailableSeen,
                     )
                 }
+                val airPlayActive = isAirPlayActive()
+                if (carPlayStartWatchdogDeadlineNanos != 0L) {
+                    if (airPlayActive) {
+                        carPlayStartWatchdogDeadlineNanos = 0L
+                    } else if (System.nanoTime() >= carPlayStartWatchdogDeadlineNanos) {
+                        onProgress("iap2 carplay-start watchdog expired; no AirPlay session after the invite")
+                        return Iap2WirelessControlResult(
+                            Iap2WirelessControlTerminal.TIMED_OUT,
+                            stage,
+                            forwardedFrames,
+                            wifiConfigurationsSent,
+                            carPlayStartSessionsSent,
+                            transportNotificationSeen,
+                            postTransportWiFiConfigurationsSent,
+                            wirelessCarPlayAvailableSeen,
+                        )
+                    }
+                }
+                val resendReason = startResend.resendDue(
+                    peerOnNetwork = peerPresence?.isPresent == true,
+                    airPlayActive = airPlayActive,
+                )
+                if (resendReason != null) sendCarPlayStart(resendReason)
                 location.tick { send(it, deadlineNanos) }
                 vehicleStatus.tick { send(it, deadlineNanos) }
-                val pollTimeout = vehicleStatus.pollTimeout(location.pollTimeout(remaining))
+                val pollTimeout = carPlayStartPollTimeout(
+                    pollTimeoutMillis = vehicleStatus.pollTimeout(location.pollTimeout(remaining)),
+                    watchdogRemainingMillis = if (carPlayStartWatchdogDeadlineNanos != 0L) {
+                        remainingMillis(carPlayStartWatchdogDeadlineNanos).coerceAtLeast(1L)
+                    } else {
+                        0L
+                    },
+                    resendWakeupNeeded = startResend.needsWakeup(),
+                )
                 val incoming = session.recv(pollTimeout)
                 if (incoming == null) {
                     if (session.isClosed) {
@@ -158,10 +215,8 @@ class Iap2WirelessControlClient(
 
                     CARPLAY_AVAILABILITY -> {
                         onProgress("iap2 rx=0x4300 carplay-availability")
-                        send(carPlayStartSession(endpoint), deadlineNanos)
-                        stage = later(stage, Iap2WirelessControlStage.CARPLAY_START_SENT)
-                        carPlayStartSessionsSent++
-                        onProgress("iap2 tx=0x4301 carplay-start-session")
+                        sendCarPlayStart()
+                        startResend.onInviteSent(peerOnNetwork = peerPresence?.isPresent == true)
                     }
 
                     WIRELESS_CARPLAY_UPDATE -> {
@@ -288,6 +343,29 @@ class Iap2WirelessControlClient(
             )
         }
     }
+}
+
+/** Wakeup ceiling while a CarPlay invite is outstanding and its resend ladder is armed. */
+private const val CARPLAY_START_POLL_MILLIS = 1_000L
+
+/**
+ * Poll timeout for one iteration of the wireless control loop while a 0x4301 invite is outstanding.
+ *
+ * The watchdog and the resend ladder are independent schedules. Capping the poll by the watchdog
+ * alone let the loop sleep through the whole invite window, so the ladder was never evaluated: on an
+ * Android 8 hotspot the iPhone joined the accessory network after a cold invite and the invite was
+ * never re-sent, leaving the session to time out. The ladder therefore caps the poll on its own,
+ * whatever the watchdog is doing, so its triggers are evaluated within a second.
+ */
+internal fun carPlayStartPollTimeout(
+    pollTimeoutMillis: Long,
+    watchdogRemainingMillis: Long,
+    resendWakeupNeeded: Boolean,
+): Long {
+    var timeout = pollTimeoutMillis
+    if (watchdogRemainingMillis > 0L) timeout = minOf(timeout, watchdogRemainingMillis)
+    if (resendWakeupNeeded) timeout = minOf(timeout, CARPLAY_START_POLL_MILLIS)
+    return timeout
 }
 
 /** Wireless 0x5703 security values. */

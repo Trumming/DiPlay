@@ -43,6 +43,8 @@ import com.shilapi.xcertplay.network.WifiP2pGroupManager
 import com.shilapi.xcertplay.network.WirelessHotspotInfo
 import com.shilapi.xcertplay.network.WirelessHotspotBackend
 import com.shilapi.xcertplay.network.WirelessHotspotManager
+import com.shilapi.xcertplay.transport.WirelessPeerPresence
+import com.shilapi.xcertplay.network.WirelessLinkProbe
 import com.shilapi.xcertplay.transport.BlockingDuplexByteStream
 import com.shilapi.xcertplay.transport.BluetoothRfcommDuplexStream
 import com.shilapi.xcertplay.transport.Ch341DeviceMatcher
@@ -223,7 +225,13 @@ class CarPlayController(
     private val wirelessTunnelReady = AtomicBoolean(false)
     private val wirelessActiveReported = AtomicBoolean(false)
     private val wirelessGeneration = AtomicInteger(0)
+    private val wirelessAutoRestarts = AtomicInteger(0)
+
+    /** Live Wi-Fi-peer evidence for the current wireless run; shared by both control clients. */
+    @Volatile
+    private var wirelessPeerPresence: WirelessPeerPresence? = null
     private val wirelessConnectionProof = WirelessConnectionProof<AirPlaySession>()
+    private var wirelessLinkProbe: WirelessLinkProbe? = null
 
     private var permissionCloseable: Closeable? = null
     private var attachCloseable: Closeable? = null
@@ -375,6 +383,7 @@ class CarPlayController(
     /** Re-runs iPhone discovery/bring-up using the already-open MFi session. */
     fun reconnectIphone() = synchronized(lifecycleLock) {
         if (closed) return
+        wirelessAutoRestarts.set(0)
         if (mfiSession == null) {
             startMfi()
         } else if (config.transport == CarPlayTransport.WIRELESS) {
@@ -815,6 +824,7 @@ class CarPlayController(
     }
 
     private fun startPhone() {
+        wirelessAutoRestarts.set(0)
         if (config.locationReportingEnabled) {
             val started = try {
                 locationProvider?.start() == true
@@ -860,6 +870,25 @@ class CarPlayController(
             isDaemon = true
             start()
         }
+    }
+
+    /**
+     * One bounded automatic retry of a failed cold wireless start. When the iPhone received the
+     * 0x4301 invite while off the accessory network it joins Wi-Fi but never opens AirPlay and
+     * drops the procedure after ~40s; by then it treats the hotspot as a known network, so the
+     * second bring-up delivers the invite warm and connects immediately (verified by the second
+     * run of the Android 8 hotspot capture). Deliberately budgeted: dongle firmware notes that
+     * aggressive reconnects make iOS ignore further CarPlay invites.
+     */
+    private fun autoRestartWirelessAfterColdStart(reason: String): Boolean {
+        if (closed) return false
+        if (wirelessAutoRestarts.incrementAndGet() > MAX_WIRELESS_COLD_START_RESTARTS) {
+            debugLog("wireless cold-start auto-restart skipped (budget exhausted): $reason")
+            return false
+        }
+        debugLog("wireless cold-start auto-restart: $reason")
+        restartWireless()
+        return true
     }
 
     private fun runWireless(generation: Int) {
@@ -948,6 +977,7 @@ class CarPlayController(
                     mfi = mfi,
                     listener = wirelessSessionListener(generation),
                     media = media,
+                    onDiagnostic = ::debugLog,
                 )
             ) {
                 CarPlayVpnService.AttachResult.Started -> Unit
@@ -979,6 +1009,18 @@ class CarPlayController(
             bonjour = bonjourClient
             bonjourClient.start()
             debugLog("wireless Bonjour services started mode=interface iface=${hotspotInfo.interfaceName ?: "unknown"}")
+            // Passive boundary observer for the connecting window: interface table, ARP entries,
+            // mDNS queries and AirPlay accepts all land in the session log, which is the only
+            // evidence source on head units without adb. Its peer-presence transition also lets
+            // the control loop re-send the cold 0x4301 invite once the iPhone is on the network.
+            val peerPresence = WirelessPeerPresence()
+            wirelessPeerPresence = peerPresence
+            wirelessLinkProbe = WirelessLinkProbe(
+                interfaceName = hotspotInfo.interfaceName,
+                interfaceAddress = hostAddress,
+                sink = ::debugLog,
+                presence = peerPresence,
+            ).also { probe -> probe.start() }
             if (isStaleWirelessRun(generation)) {
                 closeWirelessStack()
                 return
@@ -1040,6 +1082,9 @@ class CarPlayController(
                 locationProvider = locationProvider,
                 vehicleStatusProvider = vehicleStatusProvider,
                 locationRequest = wirelessLocationRequest,
+                peerPresence = peerPresence,
+                isAirPlayActive = { isWirelessAirPlayActive() },
+                carPlayStartWatchdogMillis = COLD_START_INVITE_TIMEOUT_MILLIS,
                 onIncoming = ::onRouteFrame,
                 onProgress = ::debugLog,
             )
@@ -1066,6 +1111,14 @@ class CarPlayController(
                             sessionActive = activeSession != null,
                         )
                         if (!handoffInProgress) {
+                            if (autoRestartWirelessAfterColdStart(
+                                    "Bluetooth control channel closed without an AirPlay " +
+                                        "session stage=${result.stage} " +
+                                        "invites=${result.carPlayStartSessionsSent}",
+                                )
+                            ) {
+                                return
+                            }
                             throw IOException(
                                 "Wireless CarPlay control channel closed before tunnel iAP2 ready",
                             )
@@ -1078,6 +1131,13 @@ class CarPlayController(
                 }
                 Iap2WirelessControlTerminal.TIMED_OUT ->
                     if (!wirelessActiveReported.get()) {
+                        if (autoRestartWirelessAfterColdStart(
+                                "control loop ended stage=${result.stage} " +
+                                    "invites=${result.carPlayStartSessionsSent}",
+                            )
+                        ) {
+                            return
+                        }
                         onStatus(CarPlayStatus.ControlEnded)
                     }
             }
@@ -1130,6 +1190,8 @@ class CarPlayController(
                         // The iPhone asks for location only on the Bluetooth link (see Iap2LocationRequest).
                         locationRequest = wirelessLocationRequest,
                         continueLocationRequest = true,
+                        peerPresence = wirelessPeerPresence,
+                        isAirPlayActive = { isWirelessAirPlayActive() },
                         onReady = {
                             onWirelessTunnelReady(generation)
                         },
@@ -1164,6 +1226,10 @@ class CarPlayController(
             false
         }
     }
+
+    /** Whether the wireless run already has an AirPlay side worth protecting from extra invites. */
+    private fun isWirelessAirPlayActive(): Boolean =
+        wirelessTunnelReady.get() || activeSession != null
 
     private fun wirelessSessionListener(generation: Int): AirPlaySessionListener =
         object : AirPlaySessionListener by sessionListener {
@@ -1785,6 +1851,9 @@ class CarPlayController(
 
     private fun closeWirelessStack(service: CarPlayVpnService? = vpnService) {
         wirelessConnectionProof.clear()
+        val activeProbe = wirelessLinkProbe
+        wirelessLinkProbe = null
+        if (activeProbe != null) closeBestEffort("wireless link probe") { activeProbe.close() }
         media.setIapTunnelHandler(null)
         val activeTunnel = wirelessTunnelChannel
         wirelessTunnelChannel = null
@@ -1801,6 +1870,7 @@ class CarPlayController(
         if (activeHotspot != null) closeBestEffort("wireless hotspot") { activeHotspot.close() }
         wirelessIdentification = null
         wirelessAirPlayEndpoint = null
+        wirelessPeerPresence = null
         wirelessHandoffRequested.set(false)
         wirelessTunnelReady.set(false)
         wirelessActiveReported.set(false)
@@ -2102,6 +2172,8 @@ class CarPlayController(
         private const val VPN_CONNECT_TIMEOUT_MILLIS = 10_000L
         private const val CONTROL_LOOP_TIMEOUT_MILLIS = 5 * 60_000L
         private const val LOCATION_CONTROL_LOOP_TIMEOUT_MILLIS = 24 * 60 * 60 * 1_000L
+        private const val COLD_START_INVITE_TIMEOUT_MILLIS = 45_000L
+        private const val MAX_WIRELESS_COLD_START_RESTARTS = 1
         private const val PERMISSION_POLL_INTERVAL_MILLIS = 500L
         private const val PERMISSION_POLL_TIMEOUT_MILLIS = 120_000L
         private const val DEVICE_AVAILABILITY_POLL_INTERVAL_MILLIS = 2_000L
