@@ -6,6 +6,7 @@ import com.shilapi.xcertplay.iap2.message.Iap2WirelessSessionParameters
 import com.shilapi.xcertplay.iap2.session.Iap2Session
 import com.shilapi.xcertplay.iap2.wire.Iap2Frame
 import com.shilapi.xcertplay.mfi.Iap2MfiAuthenticationClient
+import com.shilapi.xcertplay.network.AddressTag
 import kotlin.math.min
 
 /**
@@ -89,11 +90,14 @@ class Iap2WirelessControlClient(
                 carPlayStartWatchdogDeadlineNanos =
                     System.nanoTime() + carPlayStartWatchdogMillis * NANOS_PER_MILLISECOND
             }
+            // What the invite actually advertises: the phone can only connect to these addresses.
+            val advertisedHosts = endpoint.ipAddresses.joinToString(",") { AddressTag.ofText(it) }
             onProgress(
                 if (resendReason == null) {
-                    "iap2 tx=0x4301 carplay-start-session peerOnNetwork=${peerPresence?.isPresent == true}"
+                    "iap2 tx=0x4301 carplay-start-session peerOnNetwork=${peerPresence?.isPresent == true} " +
+                        "hosts=[$advertisedHosts]"
                 } else {
-                    "iap2 tx=0x4301 carplay-start-session resend: $resendReason"
+                    "iap2 tx=0x4301 carplay-start-session resend: $resendReason hosts=[$advertisedHosts]"
                 },
             )
         }

@@ -35,6 +35,7 @@ import com.shilapi.xcertplay.mfi.MfiAuthenticationClient
 import com.shilapi.xcertplay.mfi.RemoteMfiAuthenticationClient
 import com.shilapi.xcertplay.mfi.LocalMfiAuthenticationClient
 import com.shilapi.xcertplay.network.CarPlayBonjour
+import com.shilapi.xcertplay.network.AddressTag
 import com.shilapi.xcertplay.network.diagnosticSummary
 import com.shilapi.xcertplay.network.CarPlayVpnService
 import com.shilapi.xcertplay.network.LocalOnlyHotspotManager
@@ -936,6 +937,7 @@ class CarPlayController(
                     "family=${if (hostAddress is Inet6Address) "IPv6" else "IPv4"} " +
                     "identitySource=${if (deviceIdentifier == hotspotInfo.bssid) "interface" else "saved"} " +
                     "host=$hostAddressText " +
+                    "hostTag=${AddressTag.of(hostAddress)} " +
                     "band=${hotspotInfo.bandLabel} channel=${hotspotInfo.channel} " +
                     "frequency=${hotspotInfo.frequencyMHz?.toString() ?: "unknown"}MHz",
             )
@@ -988,6 +990,7 @@ class CarPlayController(
             }
             debugLog(
                 "wireless AirPlay listener attached bind=$hostAddressText " +
+                    "hostTag=${AddressTag.of(hostAddress)} " +
                     "port=${airPlayConfig.port}",
             )
             if (isStaleWirelessRun(generation)) {
@@ -1008,7 +1011,11 @@ class CarPlayController(
             )
             bonjour = bonjourClient
             bonjourClient.start()
-            debugLog("wireless Bonjour services started mode=interface iface=${hotspotInfo.interfaceName ?: "unknown"}")
+            debugLog(
+                "wireless Bonjour services started mode=interface " +
+                    "iface=${hotspotInfo.interfaceName ?: "unknown"} " +
+                    "hostTag=${AddressTag.of(hostAddress)}",
+            )
             // Passive boundary observer for the connecting window: interface table, ARP entries,
             // mDNS queries and AirPlay accepts all land in the session log, which is the only
             // evidence source on head units without adb. Its peer-presence transition also lets

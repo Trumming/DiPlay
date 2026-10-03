@@ -188,7 +188,14 @@ class CarPlayVpnService : VpnService() {
                 val socket: Socket = server.accept()
                 Log.i(TAG, "airplay connection accepted from ${socket.remoteSocketAddress}")
                 runCatching {
-                    acceptDiagnostic("airplay connection accepted from ${socket.remoteSocketAddress}")
+                    // Tag and subnet verdict instead of the address: the diagnostic report redacts
+                    // addresses to one placeholder, so this is what makes two runs comparable.
+                    acceptDiagnostic(
+                        "airplay connection accepted from ${socket.remoteSocketAddress} " +
+                            "peerTag=${AddressTag.of(socket.inetAddress)} " +
+                            "sameSubnet=" +
+                            "${AddressTag.sameSubnetV4(runCatching { server.inetAddress }.getOrNull(), socket.inetAddress)}",
+                    )
                 }
                 socket.tcpNoDelay = true
                 socket.keepAlive = true
