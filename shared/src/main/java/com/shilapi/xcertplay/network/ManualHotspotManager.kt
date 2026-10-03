@@ -83,6 +83,23 @@ class ManualHotspotManager(
             )
         }
         validateApConfiguration(apConfiguration)
+        // The name is validated above; the key was not, and it is the value the iPhone is told to
+        // join with. Prefer the running access point's own key whenever the platform exposes it.
+        val credential = resolveManualHotspotCredential(passphrase, apConfiguration?.apPassphrase)
+        onDiagnostic(
+            "Manual hotspot credential source=${credential.source} " +
+                "matchesSetting=${credential.matchesConfigured} chars=${credential.passphrase.length}",
+        )
+        if (credential.matchesConfigured == false) {
+            onDiagnostic(
+                "Manual hotspot credential differs from the app setting; " +
+                    "the access point key is what the iPhone is told",
+            )
+            Log.w(
+                TAG,
+                "Manual hotspot key differs from the app setting; advertising the access point key",
+            )
+        }
 
         var lastReason = "local hotspot interface was not found"
         while (true) {
@@ -131,7 +148,7 @@ class ManualHotspotManager(
                 val observedBandLabel = wifiBandLabel(apConfiguration?.band)
                 return WirelessHotspotInfo(
                     ssid = expectedSsid,
-                    passphrase = passphrase,
+                    passphrase = credential.passphrase,
                     security = security,
                     channel = channel,
                     frequencyMHz = frequencyMHz,
@@ -363,6 +380,10 @@ class ManualHotspotManager(
                 channel = channel,
                 frequencyMHz = wifiChannelToFrequencyMhz(channel, band),
                 security = mapSoftApSecurity(configuration.securityType),
+                apPassphrase = runCatching {
+                    SoftApConfiguration::class.java.getMethod("getPassphrase")
+                        .invoke(configuration) as? String
+                }.getOrNull(),
             )
         } catch (_: Throwable) {
             null
@@ -392,6 +413,8 @@ class ManualHotspotManager(
                 channel = channel,
                 frequencyMHz = wifiChannelToFrequencyMhz(channel, band),
                 security = mapWifiConfigurationSecurity(configuration),
+                // Vendor builds may hand back "*" or an empty string here; the resolver drops those.
+                apPassphrase = configuration.preSharedKey?.let(::unquote),
             )
         } catch (_: Throwable) {
             null
@@ -466,6 +489,8 @@ class ManualHotspotManager(
         val channel: Int,
         val frequencyMHz: Int?,
         val security: Iap2WirelessSecurity,
+        /** The running access point's key when the platform exposes it; masked values are dropped. */
+        val apPassphrase: String? = null,
     )
 
     private class LocalHotspotInterface(
