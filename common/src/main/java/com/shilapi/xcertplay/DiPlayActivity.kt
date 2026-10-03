@@ -1026,16 +1026,16 @@ class DiPlayActivity : ComponentActivity() {
                         }
                     }
                 }
-                if (uri != null) { DiagnosticExportStore.write(appContext.contentResolver, uri, report); uri }
-                else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    DiagnosticExportStore.saveToDownloads(appContext.contentResolver, fileName, report)
+                if (uri != null) {
+                    DiagnosticExportStore.write(appContext.contentResolver, uri, report)
+                    ExportResult(uri, getString(R.string.your_report_was_saved_to_the_selected_location))
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ExportResult(
+                        DiagnosticExportStore.saveToDownloads(appContext.contentResolver, fileName, report),
+                        "Downloads/DiPlay/$fileName",
+                    )
                 } else {
-                    @Suppress("DEPRECATION")
-                    val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                    val directory = File(downloads, "DiPlay").apply { if (!isDirectory) mkdirs() }
-                    val destination = File(directory, fileName)
-                    destination.writeText(report)
-                    Uri.fromFile(destination)
+                    writeReportToPublicDownloadsOrAppDirectory(appContext, report, fileName)
                 }
             }
             runOnUiThread {
@@ -1043,28 +1043,70 @@ class DiPlayActivity : ComponentActivity() {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 exportButton?.apply { isEnabled = true; text = getString(R.string.save_diagnostic_report) }
                 if (result.isSuccess) {
-                    val savedUri = result.getOrThrow()
+                    val saved = result.getOrThrow()
                     AlertDialog.Builder(this).setTitle(getString(R.string.diagnostic_report_saved))
-                        .setMessage(if (uri == null) "Downloads/DiPlay/$fileName" else getString(R.string.your_report_was_saved_to_the_selected_location))
+                        .setMessage(saved.location)
                         .setPositiveButton(getString(R.string.done), null)
                         .setNeutralButton(getString(R.string.share)) { _, _ ->
                             runCatching {
                                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"; putExtra(Intent.EXTRA_STREAM, savedUri)
-                                    clipData = android.content.ClipData.newRawUri(getString(R.string.report_clip_label), savedUri)
+                                    type = "text/plain"; putExtra(Intent.EXTRA_STREAM, saved.uri)
+                                    clipData = android.content.ClipData.newRawUri(getString(R.string.report_clip_label), saved.uri)
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }, getString(R.string.share_diagnostic_report)))
                             }.onFailure { toast(getString(R.string.report_saved_open_it_from_your_file_manager_to_share_it)) }
                         }.show()
                 } else {
+                    val failure = result.exceptionOrNull()
+                    Log.w("DiPlay", "diagnostic report export failed", failure)
                     AlertDialog.Builder(this).setTitle(getString(R.string.could_not_save_the_report))
-                        .setMessage(getString(R.string.check_that_storage_is_available_or_choose_another_save_loc))
+                        .setMessage(
+                            getString(R.string.check_that_storage_is_available_or_choose_another_save_loc) +
+                                (failure?.let { "\n\n${it.javaClass.simpleName}: ${it.message}" } ?: ""),
+                        )
                         .setPositiveButton(getString(R.string.choose_location)) { _, _ -> chooseReportDestination() }
                         .setNegativeButton(getString(R.string.close), null).show()
                 }
             }
         }, "diplay-export").start()
     }
+
+    /** Where a saved report ended up, and a label the confirmation dialog can show verbatim. */
+    private data class ExportResult(val uri: Uri, val location: String)
+
+    /**
+     * Pre-Q head units often ship no DocumentsUI, and some deny the public Downloads write even with
+     * the storage permission granted. The app's own external directory needs no permission and is
+     * still reachable from the car's file manager, which is how a report reaches a PC either way.
+     */
+    private fun writeReportToPublicDownloadsOrAppDirectory(
+        appContext: Context,
+        report: String,
+        fileName: String,
+    ): ExportResult {
+        val publicWrite = runCatching {
+            @Suppress("DEPRECATION")
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val directory = File(downloads, "DiPlay").apply { if (!isDirectory) mkdirs() }
+            val destination = File(directory, fileName)
+            destination.writeText(report)
+            ExportResult(Uri.fromFile(destination), "Downloads/DiPlay/$fileName")
+        }
+        publicWrite.getOrNull()?.let { return it }
+        val publicFailure = publicWrite.exceptionOrNull()
+        Log.w("DiPlay", "public Downloads write failed; saving to the app directory instead", publicFailure)
+        val fallbackDirectory = File(appContext.getExternalFilesDir(null) ?: appContext.filesDir, "reports")
+            .apply { if (!isDirectory) mkdirs() }
+        val destination = File(fallbackDirectory, fileName)
+        try {
+            destination.writeText(report)
+        } catch (fallbackFailure: Throwable) {
+            publicFailure?.addSuppressed(fallbackFailure)
+            throw publicFailure ?: fallbackFailure
+        }
+        return ExportResult(Uri.fromFile(destination), destination.absolutePath)
+    }
+
     private fun permissionHelp(title: String, body: String) {
         AlertDialog.Builder(this).setTitle(title).setMessage(body).setPositiveButton(getString(R.string.app_settings)) { _, _ ->
             openSystem(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
