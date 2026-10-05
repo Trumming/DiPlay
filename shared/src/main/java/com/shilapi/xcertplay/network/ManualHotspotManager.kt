@@ -87,10 +87,11 @@ class ManualHotspotManager(
         // join with. Prefer the running access point's own key whenever the platform exposes it.
         val credential = resolveManualHotspotCredential(passphrase, apConfiguration?.apPassphrase)
         onDiagnostic(
-            "Manual hotspot credential source=${credential.source} " +
-                "matchesSetting=${credential.matchesConfigured} chars=${credential.passphrase.length}",
+            "Manual hotspot credential " +
+                "source=${if (credential.fromAccessPoint) "accessPoint" else "appSetting"} " +
+                "matchesSetting=${credential.matchesSetting} chars=${credential.passphrase.length}",
         )
-        if (credential.matchesConfigured == false) {
+        if (credential.matchesSetting == false) {
             onDiagnostic(
                 "Manual hotspot credential differs from the app setting; " +
                     "the access point key is what the iPhone is told",

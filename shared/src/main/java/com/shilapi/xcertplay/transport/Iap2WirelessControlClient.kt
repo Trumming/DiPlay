@@ -91,7 +91,7 @@ class Iap2WirelessControlClient(
                     System.nanoTime() + carPlayStartWatchdogMillis * NANOS_PER_MILLISECOND
             }
             // What the invite actually advertises: the phone can only connect to these addresses.
-            val advertisedHosts = endpoint.ipAddresses.joinToString(",") { AddressTag.ofText(it) }
+            val advertisedHosts = endpoint.ipAddresses.joinToString(",") { AddressTag.of(it) }
             onProgress(
                 if (resendReason == null) {
                     "iap2 tx=0x4301 carplay-start-session peerOnNetwork=${peerPresence?.isPresent == true} " +

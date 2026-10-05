@@ -1,7 +1,9 @@
 package com.shilapi.xcertplay.network
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ManualHotspotCredentialTest {
@@ -12,14 +14,14 @@ class ManualHotspotCredentialTest {
             fromAccessPoint = "1357924680",
         )
 
-        assertEquals(SOURCE_ACCESS_POINT, credential.source)
+        assertTrue(credential.fromAccessPoint)
         assertEquals(
             "the access point is the source of truth; advertising the app setting here would tell " +
                 "the iPhone a key the accessory does not use",
             "1357924680",
             credential.passphrase,
         )
-        assertEquals(false, credential.matchesConfigured)
+        assertEquals(false, credential.matchesSetting)
     }
 
     @Test
@@ -29,8 +31,8 @@ class ManualHotspotCredentialTest {
             fromAccessPoint = "888888888",
         )
 
-        assertEquals(SOURCE_ACCESS_POINT, credential.source)
-        assertEquals(true, credential.matchesConfigured)
+        assertTrue(credential.fromAccessPoint)
+        assertEquals(true, credential.matchesSetting)
         assertEquals("888888888", credential.passphrase)
     }
 
@@ -41,13 +43,9 @@ class ManualHotspotCredentialTest {
                 configured = "888888888",
                 fromAccessPoint = masked,
             )
-            assertEquals(
-                "a masked or impossible value must never be advertised: '$masked'",
-                SOURCE_SETTING,
-                credential.source,
-            )
+            assertFalse("a masked value must never be advertised: '$masked'", credential.fromAccessPoint)
             assertEquals("888888888", credential.passphrase)
-            assertNull("nothing can be compared when the platform hides the key", credential.matchesConfigured)
+            assertNull("nothing can be compared when the platform hides the key", credential.matchesSetting)
         }
     }
 
@@ -55,7 +53,7 @@ class ManualHotspotCredentialTest {
     fun openAccessPointKeepsTheEmptyConfiguredKey() {
         val credential = resolveManualHotspotCredential(configured = "", fromAccessPoint = "")
 
-        assertEquals(SOURCE_SETTING, credential.source)
+        assertFalse(credential.fromAccessPoint)
         assertEquals("", credential.passphrase)
     }
 }

@@ -121,11 +121,14 @@ class WirelessLinkProbe(
                 val device = fields[5]
                 val key = "$ip|$mac|$device"
                 if (seenArp.add(key)) {
-                    sink("probe arp $ip at $mac dev=$device ${scopeOf(ip)}")
+                    sink("probe arp $ip at $mac dev=$device ${AddressTag.scope(interfaceAddress, ip)}")
                 }
                 if (presence != null && (interfaceName == null || device == interfaceName)) {
                     presence.markPresent(ip)?.let {
-                        sink("probe peer present $ip dev=$device (arp) ${scopeOf(ip)}")
+                        sink(
+                            "probe peer present $ip dev=$device (arp) " +
+                                AddressTag.scope(interfaceAddress, ip),
+                        )
                     }
                 }
             }
@@ -178,7 +181,7 @@ class WirelessLinkProbe(
         val source = packet.address?.hostAddress ?: "?"
         if (presence != null && source != "?" && source != selfHostAddress) {
             presence.markPresent(source)?.let {
-                sink("probe peer present $source (mdns) ${scopeOf(source)}")
+                sink("probe peer present $source (mdns) ${AddressTag.scope(interfaceAddress, source)}")
             }
         }
         if (flags and DNS_FLAG_RESPONSE != 0) {
@@ -233,18 +236,6 @@ class WirelessLinkProbe(
             offset += 1 + labelLength
         }
         return null
-    }
-
-    /**
-     * Comparable, privacy-safe description of a peer address: the report redacts addresses to one
-     * placeholder, so a digest plus the subnet verdict is what lets two runs be compared at all.
-     */
-    private fun scopeOf(host: String): String {
-        val address = runCatching {
-            InetAddress.getByName(host.substringBefore('%'))
-        }.getOrNull()
-        val sameSubnet = AddressTag.sameSubnetV4(interfaceAddress, address)
-        return "tag=${AddressTag.of(address)} sameSubnet=$sameSubnet"
     }
 
     private fun sleepWhileOpen(millis: Long): Boolean {
