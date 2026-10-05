@@ -74,7 +74,10 @@ class RemoteMfiAuthenticationClientTest {
         val client = RemoteMfiAuthenticationClient(
             serverAddress = serverAddress(),
             token = "test-token",
-            readTimeoutMillis = 50,
+            // The first /mfi/sign call sleeps 200ms on purpose, so the client must time out below
+            // that to take its retry path. 150ms keeps that margin while leaving the certificate
+            // fetch (no server delay) enough headroom that a loaded machine cannot starve it.
+            readTimeoutMillis = 150,
         )
         client.reset()
         assertEquals(3, client.protocolMajor())
